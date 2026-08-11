@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "waktrainercoremodels",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/iosdevbyul/WakTrainerCoreModels",
+      "state" : {
+        "branch" : "main",
+        "revision" : "83718f1b36326539713ea1863e0cf7a69caa1c2f"
+      }
+    }
+  ],
+  "version" : 2
+}

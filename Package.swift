@@ -11,12 +11,14 @@ let package = Package(
         .library(name: "WakTrainerServiceHealthKit", targets: ["WakTrainerServiceHealthKit"])
     ],
     dependencies: [
-        .package(path: "../WakTrainerCoreModels")
+        .package(url: "https://github.com/iosdevbyul/WakTrainerCoreModels", branch: "main")
     ],
     targets: [
         .target(
             name: "WakTrainerServiceHealthKit",
-            dependencies: ["WakTrainerCoreModels"]
+            dependencies: [
+                .product(name: "WakTrainerCoreModels", package: "WakTrainerCoreModels")
+            ]
         )
     ]
 )
