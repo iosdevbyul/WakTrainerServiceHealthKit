@@ -14,6 +14,7 @@ public final class HealthKitManager: NSObject, HealthKitManagerProtocol, @unchec
     private var heartRateAnchor: HKQueryAnchor?
     private var energyAnchor: HKQueryAnchor?
     private var stepAnchor: HKQueryAnchor?
+    private var distanceAnchor: HKQueryAnchor?
     
     // 실시간 수치 보관
     private var currentHeartRate: Double = 0
@@ -150,6 +151,27 @@ public final class HealthKitManager: NSObject, HealthKitManagerProtocol, @unchec
             lock.withLock { activeQueries.append(stepQuery) }
             healthStore.execute(stepQuery)
         }
+
+        // 4. 이동 거리 (새로 추가된 부분)
+        if let distanceType = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) {
+            let distanceQuery = HKAnchoredObjectQuery(
+                type: distanceType,
+                predicate: predicate,
+                anchor: distanceAnchor,
+                limit: HKObjectQueryNoLimit
+            ) { [weak self] _, samples, _, newAnchor, _ in
+                self?.distanceAnchor = newAnchor
+                self?.processDistanceSamples(samples)
+            }
+            
+            distanceQuery.updateHandler = { [weak self] _, samples, _, newAnchor, _ in
+                self?.distanceAnchor = newAnchor
+                self?.processDistanceSamples(samples)
+            }
+            
+            lock.withLock { activeQueries.append(distanceQuery) }
+            healthStore.execute(distanceQuery)
+        }
     }
     
     // MARK: - Sample Processing
@@ -179,6 +201,17 @@ public final class HealthKitManager: NSObject, HealthKitManagerProtocol, @unchec
         
         lock.withLock {
             self.currentSteps += addedSteps
+            self.yieldSnapshot()
+        }
+    }
+
+    // 새로 추가된 거리 데이터 처리 메서드 (미터 단위 기준)
+    private func processDistanceSamples(_ samples: [HKSample]?) {
+        guard let samples = samples as? [HKQuantitySample] else { return }
+        let addedDistance = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .meter()) }
+        
+        lock.withLock {
+            self.currentDistance += addedDistance
             self.yieldSnapshot()
         }
     }
