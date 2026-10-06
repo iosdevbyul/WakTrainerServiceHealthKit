@@ -1,23 +1,42 @@
 // swift-tools-version: 5.9
+
 import PackageDescription
 
 let package = Package(
     name: "WakTrainerServiceHealthKit",
     platforms: [
-        .iOS(.v14),
-        .macOS(.v13)
+        .iOS(.v17)
     ],
     products: [
-        .library(name: "WakTrainerServiceHealthKit", targets: ["WakTrainerServiceHealthKit"])
+        .library(
+            name: "WakTrainerServiceHealthKit",
+            targets: ["WakTrainerServiceHealthKit"]
+        )
     ],
     dependencies: [
-        .package(url: "https://github.com/iosdevbyul/WakTrainerCoreModels", branch: "main")
+        .package(
+            url: "https://github.com/iosdevbyul/WakTrainerCoreModels",
+            branch: "feat/workout-session-reporting"
+        )
     ],
     targets: [
         .target(
             name: "WakTrainerServiceHealthKit",
             dependencies: [
-                .product(name: "WakTrainerCoreModels", package: "WakTrainerCoreModels")
+                .product(
+                    name: "WakTrainerCoreModels",
+                    package: "WakTrainerCoreModels"
+                )
+            ]
+        ),
+        .testTarget(
+            name: "WakTrainerServiceHealthKitTests",
+            dependencies: [
+                "WakTrainerServiceHealthKit",
+                .product(
+                    name: "WakTrainerCoreModels",
+                    package: "WakTrainerCoreModels"
+                )
             ]
         )
     ]

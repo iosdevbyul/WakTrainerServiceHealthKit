@@ -2,227 +2,534 @@ import Foundation
 import HealthKit
 import WakTrainerCoreModels
 
-public final class HealthKitManager: NSObject, HealthKitManagerProtocol, @unchecked Sendable {
-    private let healthStore = HKHealthStore()
+public final class HealthKitManager: NSObject,
+                                     HealthKitManagerProtocol,
+                                     @unchecked Sendable {
+
+    private let healthStore: HKHealthStore
     private let lock = NSLock()
-    
-    private var _isAuthorized = false
-    private var streamContinuation: AsyncStream<HealthSnapshot>.Continuation?
-    
-    // iOS 실시간 쿼리 및 Anchor 저장
+
+    private var authorizationRequestCompleted = false
+
+    private var streamContinuation:
+        AsyncStream<HealthSnapshot>.Continuation?
+
     private var activeQueries: [HKQuery] = []
-    private var heartRateAnchor: HKQueryAnchor?
-    private var energyAnchor: HKQueryAnchor?
-    private var stepAnchor: HKQueryAnchor?
-    private var distanceAnchor: HKQueryAnchor?
-    
-    // 실시간 수치 보관
+    private var liveAnchors: [String: HKQueryAnchor] = [:]
+
     private var currentHeartRate: Double = 0
     private var currentEnergy: Double = 0
     private var currentSteps: Double = 0
     private var currentDistance: Double = 0
 
-    public override init() {
+    public override convenience init() {
+        self.init(healthStore: HKHealthStore())
+    }
+
+    init(
+        healthStore: HKHealthStore
+    ) {
+        self.healthStore = healthStore
         super.init()
     }
-    
+
     public var isAuthorized: Bool {
         get async {
-            lock.withLock { _isAuthorized }
+            lock.withLock {
+                authorizationRequestCompleted
+            }
         }
     }
-    
+
     public func requestAuthorization() async throws -> Bool {
-        guard HKHealthStore.isHealthDataAvailable() else { return false }
-        
-        let typesToRead: Set<HKObjectType> = [
-            HKObjectType.quantityType(forIdentifier: .heartRate)!,
-            HKObjectType.quantityType(forIdentifier: .stepCount)!,
-            HKObjectType.quantityType(forIdentifier: .activeEnergyBurned)!,
-            HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning)!
-        ]
-        
-        return try await withCheckedThrowingContinuation { continuation in
-            healthStore.requestAuthorization(toShare: nil, read: typesToRead) { [weak self] success, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
+        guard HKHealthStore.isHealthDataAvailable() else {
+            throw HealthDataServiceError.healthDataUnavailable
+        }
+
+        let readTypes = Set(
+            HealthMetricDescriptor.all.compactMap(
+                \.quantityType
+            )
+        )
+
+        do {
+            let success: Bool = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Bool, Error>) in
+
+                healthStore.requestAuthorization(
+                    toShare: [],
+                    read: readTypes
+                ) { success, error in
+                    if let error {
+                        continuation.resume(
+                            throwing: error
+                        )
+                        return
+                    }
+
+                    continuation.resume(
+                        returning: success
+                    )
                 }
-                self?.lock.withLock { self?._isAuthorized = success }
-                continuation.resume(returning: success)
             }
+
+            lock.withLock {
+                authorizationRequestCompleted = success
+            }
+
+            return success
+        } catch {
+            throw HealthDataServiceError
+                .authorizationFailed(
+                    reason: error.localizedDescription
+                )
         }
     }
-    
-    // MARK: - 실시간 수집 시작
-    public func startObservingData() -> AsyncStream<HealthSnapshot> {
+
+    public func startObservingData()
+        -> AsyncStream<HealthSnapshot> {
+
         AsyncStream { continuation in
-            self.lock.withLock {
-                self.streamContinuation = continuation
+            let previousState = lock.withLock {
+                let queries = activeQueries
+                let previousContinuation =
+                    streamContinuation
+
+                activeQueries.removeAll()
+                liveAnchors.removeAll()
+
+                currentHeartRate = 0
+                currentEnergy = 0
+                currentSteps = 0
+                currentDistance = 0
+
+                streamContinuation = continuation
+
+                return (
+                    queries,
+                    previousContinuation
+                )
             }
-            
-            continuation.onTermination = { [weak self] _ in
+
+            previousState.0.forEach {
+                healthStore.stop($0)
+            }
+
+            previousState.1?.finish()
+
+            continuation.onTermination = {
+                [weak self] _ in
+
                 Task {
                     await self?.stopObservingData()
                 }
             }
-            
-            self.startRealtimeQueries()
+
+            startRealtimeQueries(
+                from: Date()
+            )
         }
     }
-    
-    // MARK: - 실시간 수집 종료
+
     public func stopObservingData() async {
-        lock.withLock {
-            for query in activeQueries {
-                healthStore.stop(query)
-            }
+        let state = lock.withLock {
+            let queries = activeQueries
+            let continuation = streamContinuation
+
             activeQueries.removeAll()
-            
-            streamContinuation?.finish()
+            liveAnchors.removeAll()
             streamContinuation = nil
-        }
-    }
-    
-    // MARK: - iOS 순수 Anchored Query 실행
-    private func startRealtimeQueries() {
-        let now = Date()
-        let predicate = HKQuery.predicateForSamples(withStart: now, end: nil, options: .strictStartDate)
-        
-        // 1. 심박수
-        if let hrType = HKObjectType.quantityType(forIdentifier: .heartRate) {
-            let hrQuery = HKAnchoredObjectQuery(
-                type: hrType,
-                predicate: predicate,
-                anchor: heartRateAnchor,
-                limit: HKObjectQueryNoLimit
-            ) { [weak self] _, samples, _, newAnchor, _ in
-                self?.heartRateAnchor = newAnchor
-                self?.processHeartRateSamples(samples)
-            }
-            
-            hrQuery.updateHandler = { [weak self] _, samples, _, newAnchor, _ in
-                self?.heartRateAnchor = newAnchor
-                self?.processHeartRateSamples(samples)
-            }
-            
-            lock.withLock { activeQueries.append(hrQuery) }
-            healthStore.execute(hrQuery)
-        }
-        
-        // 2. 소모 칼로리
-        if let energyType = HKObjectType.quantityType(forIdentifier: .activeEnergyBurned) {
-            let energyQuery = HKAnchoredObjectQuery(
-                type: energyType,
-                predicate: predicate,
-                anchor: energyAnchor,
-                limit: HKObjectQueryNoLimit
-            ) { [weak self] _, samples, _, newAnchor, _ in
-                self?.energyAnchor = newAnchor
-                self?.processEnergySamples(samples)
-            }
-            
-            energyQuery.updateHandler = { [weak self] _, samples, _, newAnchor, _ in
-                self?.energyAnchor = newAnchor
-                self?.processEnergySamples(samples)
-            }
-            
-            lock.withLock { activeQueries.append(energyQuery) }
-            healthStore.execute(energyQuery)
-        }
-        
-        // 3. 걸음 수
-        if let stepType = HKObjectType.quantityType(forIdentifier: .stepCount) {
-            let stepQuery = HKAnchoredObjectQuery(
-                type: stepType,
-                predicate: predicate,
-                anchor: stepAnchor,
-                limit: HKObjectQueryNoLimit
-            ) { [weak self] _, samples, _, newAnchor, _ in
-                self?.stepAnchor = newAnchor
-                self?.processStepSamples(samples)
-            }
-            
-            stepQuery.updateHandler = { [weak self] _, samples, _, newAnchor, _ in
-                self?.stepAnchor = newAnchor
-                self?.processStepSamples(samples)
-            }
-            
-            lock.withLock { activeQueries.append(stepQuery) }
-            healthStore.execute(stepQuery)
+
+            return (
+                queries,
+                continuation
+            )
         }
 
-        // 4. 이동 거리 (새로 추가된 부분)
-        if let distanceType = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) {
-            let distanceQuery = HKAnchoredObjectQuery(
-                type: distanceType,
-                predicate: predicate,
-                anchor: distanceAnchor,
-                limit: HKObjectQueryNoLimit
-            ) { [weak self] _, samples, _, newAnchor, _ in
-                self?.distanceAnchor = newAnchor
-                self?.processDistanceSamples(samples)
-            }
-            
-            distanceQuery.updateHandler = { [weak self] _, samples, _, newAnchor, _ in
-                self?.distanceAnchor = newAnchor
-                self?.processDistanceSamples(samples)
-            }
-            
-            lock.withLock { activeQueries.append(distanceQuery) }
-            healthStore.execute(distanceQuery)
+        state.0.forEach {
+            healthStore.stop($0)
         }
-    }
-    
-    // MARK: - Sample Processing
-    private func processHeartRateSamples(_ samples: [HKSample]?) {
-        guard let samples = samples as? [HKQuantitySample], let lastSample = samples.last else { return }
-        let val = lastSample.quantity.doubleValue(for: HKUnit(from: "count/min"))
-        
-        lock.withLock {
-            self.currentHeartRate = val
-            self.yieldSnapshot()
-        }
-    }
-    
-    private func processEnergySamples(_ samples: [HKSample]?) {
-        guard let samples = samples as? [HKQuantitySample] else { return }
-        let addedKcal = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .kilocalorie()) }
-        
-        lock.withLock {
-            self.currentEnergy += addedKcal
-            self.yieldSnapshot()
-        }
-    }
-    
-    private func processStepSamples(_ samples: [HKSample]?) {
-        guard let samples = samples as? [HKQuantitySample] else { return }
-        let addedSteps = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .count()) }
-        
-        lock.withLock {
-            self.currentSteps += addedSteps
-            self.yieldSnapshot()
-        }
+
+        state.1?.finish()
     }
 
-    // 새로 추가된 거리 데이터 처리 메서드 (미터 단위 기준)
-    private func processDistanceSamples(_ samples: [HKSample]?) {
-        guard let samples = samples as? [HKQuantitySample] else { return }
-        let addedDistance = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .meter()) }
-        
-        lock.withLock {
-            self.currentDistance += addedDistance
-            self.yieldSnapshot()
+    public func fetchWorkoutHealthData(
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> WorkoutHealthData {
+        guard endDate > startDate else {
+            throw HealthDataServiceError
+                .invalidDateRange
         }
-    }
-    
-    private func yieldSnapshot() {
-        let snapshot = HealthSnapshot(
-            heartRate: currentHeartRate,
-            stepCount: currentSteps,
-            activeCalories: currentEnergy,
-            distance: currentDistance
+
+        guard HKHealthStore.isHealthDataAvailable() else {
+            throw HealthDataServiceError
+                .healthDataUnavailable
+        }
+
+        let descriptors =
+            HealthMetricDescriptor.all.filter {
+                $0.quantityType != nil
+            }
+
+        var collectedSamples:
+            [WorkoutHealthMetricSample] = []
+
+        var successfulQueryCount = 0
+        var firstError: HealthDataServiceError?
+
+        await withTaskGroup(
+            of: MetricQueryResult.self
+        ) { group in
+            for descriptor in descriptors {
+                group.addTask {
+                    do {
+                        let samples =
+                            try await self.fetchSamples(
+                                for: descriptor,
+                                workoutStartDate: startDate,
+                                workoutEndDate: endDate
+                            )
+
+                        return .success(
+                            samples
+                        )
+                    } catch let error
+                        as HealthDataServiceError {
+
+                        return .failure(
+                            error
+                        )
+                    } catch {
+                        return .failure(
+                            .queryFailed(
+                                metric: descriptor.metric,
+                                reason:
+                                    error.localizedDescription
+                            )
+                        )
+                    }
+                }
+            }
+
+            for await result in group {
+                switch result {
+                case let .success(samples):
+                    successfulQueryCount += 1
+                    collectedSamples.append(
+                        contentsOf: samples
+                    )
+
+                case let .failure(error):
+                    if firstError == nil {
+                        firstError = error
+                    }
+                }
+            }
+        }
+
+        if successfulQueryCount == 0,
+           let firstError {
+            throw firstError
+        }
+
+        collectedSamples.sort {
+            if $0.startDate == $1.startDate {
+                return $0.metric.rawValue
+                    < $1.metric.rawValue
+            }
+
+            return $0.startDate < $1.startDate
+        }
+
+        return WorkoutHealthData(
+            summary:
+                WorkoutHealthSummaryBuilder
+                    .makeSummary(
+                        from: collectedSamples
+                    ),
+            samples: collectedSamples
         )
-        streamContinuation?.yield(snapshot)
+    }
+}
+
+// MARK: - Workout range queries
+
+private extension HealthKitManager {
+
+    enum MetricQueryResult:
+        @unchecked Sendable {
+
+        case success(
+            [WorkoutHealthMetricSample]
+        )
+
+        case failure(
+            HealthDataServiceError
+        )
+    }
+
+    func fetchSamples(
+        for descriptor: HealthMetricDescriptor,
+        workoutStartDate: Date,
+        workoutEndDate: Date
+    ) async throws
+        -> [WorkoutHealthMetricSample] {
+
+        guard let quantityType =
+                descriptor.quantityType else {
+            return []
+        }
+
+        let range = descriptor.queryRange(
+            workoutStartDate: workoutStartDate,
+            workoutEndDate: workoutEndDate
+        )
+
+        let predicate =
+            HKQuery.predicateForSamples(
+                withStart: range.lowerBound,
+                end: range.upperBound,
+                options: [
+                    .strictStartDate,
+                    .strictEndDate
+                ]
+            )
+
+        let sortDescriptors = [
+            NSSortDescriptor(
+                key:
+                    HKSampleSortIdentifierStartDate,
+                ascending: true
+            )
+        ]
+
+        let quantitySamples:
+            [HKQuantitySample]
+
+        do {
+            quantitySamples =
+                try await withCheckedThrowingContinuation {
+                    continuation in
+
+                    let query = HKSampleQuery(
+                        sampleType: quantityType,
+                        predicate: predicate,
+                        limit:
+                            HKObjectQueryNoLimit,
+                        sortDescriptors:
+                            sortDescriptors
+                    ) {
+                        _, samples, error in
+
+                        if let error {
+                            continuation.resume(
+                                throwing: error
+                            )
+                            return
+                        }
+
+                        continuation.resume(
+                            returning:
+                                samples
+                                as? [
+                                    HKQuantitySample
+                                ] ?? []
+                        )
+                    }
+
+                    healthStore.execute(
+                        query
+                    )
+                }
+        } catch {
+            throw HealthDataServiceError
+                .queryFailed(
+                    metric: descriptor.metric,
+                    reason:
+                        error.localizedDescription
+                )
+        }
+
+        return quantitySamples.map {
+            sample in
+
+            WorkoutHealthMetricSample(
+                metric: descriptor.metric,
+                startDate: sample.startDate,
+                endDate: sample.endDate,
+                value:
+                    descriptor.value(
+                        from: sample
+                    ),
+                unit:
+                    descriptor.unitSymbol,
+                sourceName:
+                    sample.sourceRevision
+                        .source.name,
+                sourceBundleIdentifier:
+                    sample.sourceRevision
+                        .source
+                        .bundleIdentifier
+            )
+        }
+    }
+}
+
+// MARK: - Realtime observation
+
+private extension HealthKitManager {
+
+    func startRealtimeQueries(
+        from startDate: Date
+    ) {
+        startRealtimeQuery(
+            descriptor: .liveHeartRate,
+            from: startDate
+        )
+
+        startRealtimeQuery(
+            descriptor: .liveActiveEnergy,
+            from: startDate
+        )
+
+        startRealtimeQuery(
+            descriptor: .liveStepCount,
+            from: startDate
+        )
+
+        startRealtimeQuery(
+            descriptor: .liveDistance,
+            from: startDate
+        )
+    }
+
+    func startRealtimeQuery(
+        descriptor: HealthMetricDescriptor,
+        from startDate: Date
+    ) {
+        guard let quantityType =
+                descriptor.quantityType else {
+            return
+        }
+
+        let key = descriptor.metric.rawValue
+
+        let predicate =
+            HKQuery.predicateForSamples(
+                withStart: startDate,
+                end: nil,
+                options: .strictStartDate
+            )
+
+        let anchor = lock.withLock {
+            liveAnchors[key]
+        }
+
+        let query =
+            HKAnchoredObjectQuery(
+                type: quantityType,
+                predicate: predicate,
+                anchor: anchor,
+                limit:
+                    HKObjectQueryNoLimit
+            ) {
+                [weak self]
+                _, samples, _, newAnchor, error in
+
+                guard error == nil else {
+                    return
+                }
+
+                self?.handleRealtimeSamples(
+                    samples,
+                    descriptor: descriptor,
+                    anchor: newAnchor
+                )
+            }
+
+        query.updateHandler = {
+            [weak self]
+            _, samples, _, newAnchor, error in
+
+            guard error == nil else {
+                return
+            }
+
+            self?.handleRealtimeSamples(
+                samples,
+                descriptor: descriptor,
+                anchor: newAnchor
+            )
+        }
+
+        lock.withLock {
+            activeQueries.append(query)
+        }
+
+        healthStore.execute(query)
+    }
+
+    func handleRealtimeSamples(
+        _ samples: [HKSample]?,
+        descriptor: HealthMetricDescriptor,
+        anchor: HKQueryAnchor?
+    ) {
+        let quantitySamples =
+            samples as? [HKQuantitySample]
+            ?? []
+
+        let values = quantitySamples.map {
+            descriptor.value(from: $0)
+        }
+
+        lock.withLock {
+            if let anchor {
+                liveAnchors[
+                    descriptor.metric.rawValue
+                ] = anchor
+            }
+
+            switch descriptor.metric {
+            case .heartRate:
+                if let latest =
+                    values.last {
+                    currentHeartRate =
+                        latest
+                }
+
+            case .activeEnergyBurned:
+                currentEnergy +=
+                    values.reduce(0, +)
+
+            case .stepCount:
+                currentSteps +=
+                    values.reduce(0, +)
+
+            case .distanceWalkingRunning:
+                currentDistance +=
+                    values.reduce(0, +)
+
+            default:
+                break
+            }
+
+            yieldSnapshotLocked()
+        }
+    }
+
+    func yieldSnapshotLocked() {
+        streamContinuation?.yield(
+            HealthSnapshot(
+                heartRate:
+                    currentHeartRate,
+                stepCount:
+                    currentSteps,
+                activeCalories:
+                    currentEnergy,
+                distance:
+                    currentDistance
+            )
+        )
     }
 }
