@@ -53,8 +53,8 @@ public final class HealthKitManager: NSObject,
         )
 
         do {
-            let success = try await withCheckedThrowingContinuation {
-                continuation in
+            let success: Bool = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Bool, Error>) in
 
                 healthStore.requestAuthorization(
                     toShare: [],
