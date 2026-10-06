@@ -16,7 +16,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/iosdevbyul/WakTrainerCoreModels",
-            branch: "feat/workout-session-reporting"
+            branch: "main"
         )
     ],
     targets: [
