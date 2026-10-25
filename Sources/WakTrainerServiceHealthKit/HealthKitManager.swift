@@ -17,10 +17,7 @@ public final class HealthKitManager: NSObject,
     private var activeQueries: [HKQuery] = []
     private var liveAnchors: [String: HKQueryAnchor] = [:]
 
-    private var currentHeartRate: Double = 0
-    private var currentEnergy: Double = 0
-    private var currentSteps: Double = 0
-    private var currentDistance: Double = 0
+    private var liveAccumulator = LiveHealthSnapshotAccumulator()
 
     public override convenience init() {
         self.init(healthStore: HKHealthStore())
@@ -98,10 +95,7 @@ public final class HealthKitManager: NSObject,
                 activeQueries.removeAll()
                 liveAnchors.removeAll()
 
-                currentHeartRate = 0
-                currentEnergy = 0
-                currentSteps = 0
-                currentDistance = 0
+                liveAccumulator = LiveHealthSnapshotAccumulator()
 
                 streamContinuation = continuation
 
@@ -479,10 +473,6 @@ private extension HealthKitManager {
             samples as? [HKQuantitySample]
             ?? []
 
-        let values = quantitySamples.map {
-            descriptor.value(from: $0)
-        }
-
         lock.withLock {
             if let anchor {
                 liveAnchors[
@@ -490,28 +480,12 @@ private extension HealthKitManager {
                 ] = anchor
             }
 
-            switch descriptor.metric {
-            case .heartRate:
-                if let latest =
-                    values.last {
-                    currentHeartRate =
-                        latest
-                }
-
-            case .activeEnergyBurned:
-                currentEnergy +=
-                    values.reduce(0, +)
-
-            case .stepCount:
-                currentSteps +=
-                    values.reduce(0, +)
-
-            case .distanceWalkingRunning:
-                currentDistance +=
-                    values.reduce(0, +)
-
-            default:
-                break
+            for sample in quantitySamples {
+                liveAccumulator.apply(
+                    metric: descriptor.metric,
+                    value: descriptor.value(from: sample),
+                    sampleEndDate: sample.endDate
+                )
             }
 
             yieldSnapshotLocked()
@@ -520,16 +494,7 @@ private extension HealthKitManager {
 
     func yieldSnapshotLocked() {
         streamContinuation?.yield(
-            HealthSnapshot(
-                heartRate:
-                    currentHeartRate,
-                stepCount:
-                    currentSteps,
-                activeCalories:
-                    currentEnergy,
-                distance:
-                    currentDistance
-            )
+            liveAccumulator.snapshot
         )
     }
 }
