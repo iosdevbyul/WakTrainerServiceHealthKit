@@ -473,7 +473,8 @@ private extension HealthKitManager {
                 samples,
                 deletedObjects: deletedObjects,
                 descriptor: descriptor,
-                anchor: newAnchor
+                anchor: newAnchor,
+                sessionID: sessionID
             )
         }
 
