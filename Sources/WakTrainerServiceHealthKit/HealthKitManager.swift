@@ -18,6 +18,7 @@ public final class HealthKitManager: NSObject,
     private var liveAnchors: [String: HKQueryAnchor] = [:]
 
     private var liveAccumulator = LiveHealthSnapshotAccumulator()
+    private var observationSession = LiveObservationSession()
 
     public override convenience init() {
         self.init(healthStore: HKHealthStore())
@@ -96,12 +97,14 @@ public final class HealthKitManager: NSObject,
                 liveAnchors.removeAll()
 
                 liveAccumulator = LiveHealthSnapshotAccumulator()
+                let sessionID = observationSession.begin()
 
                 streamContinuation = continuation
 
                 return (
                     queries,
-                    previousContinuation
+                    previousContinuation,
+                    sessionID
                 )
             }
 
@@ -115,18 +118,31 @@ public final class HealthKitManager: NSObject,
                 [weak self] _ in
 
                 Task {
-                    await self?.stopObservingData()
+                    await self?.stopObservingData(sessionID: previousState.2)
                 }
             }
 
             startRealtimeQueries(
-                from: Date()
+                from: Date(),
+                sessionID: previousState.2
             )
         }
     }
 
     public func stopObservingData() async {
-        let state = lock.withLock {
+        let sessionID = lock.withLock {
+            observationSession.currentID
+        }
+        guard let sessionID else { return }
+        await stopObservingData(sessionID: sessionID)
+    }
+
+    private func stopObservingData(sessionID: UUID) async {
+        let state = lock.withLock { () -> ([HKQuery], AsyncStream<HealthSnapshot>.Continuation?)? in
+            guard observationSession.end(ifCurrent: sessionID) else {
+                return nil
+            }
+
             let queries = activeQueries
             let continuation = streamContinuation
 
@@ -134,16 +150,11 @@ public final class HealthKitManager: NSObject,
             liveAnchors.removeAll()
             streamContinuation = nil
 
-            return (
-                queries,
-                continuation
-            )
+            return (queries, continuation)
         }
 
-        state.0.forEach {
-            healthStore.stop($0)
-        }
-
+        guard let state else { return }
+        state.0.forEach { healthStore.stop($0) }
         state.1?.finish()
     }
 
@@ -375,32 +386,38 @@ private extension HealthKitManager {
 private extension HealthKitManager {
 
     func startRealtimeQueries(
-        from startDate: Date
+        from startDate: Date,
+        sessionID: UUID
     ) {
         startRealtimeQuery(
             descriptor: .liveHeartRate,
-            from: startDate
+            from: startDate,
+            sessionID: sessionID
         )
 
         startRealtimeQuery(
             descriptor: .liveActiveEnergy,
-            from: startDate
+            from: startDate,
+            sessionID: sessionID
         )
 
         startRealtimeQuery(
             descriptor: .liveStepCount,
-            from: startDate
+            from: startDate,
+            sessionID: sessionID
         )
 
         startRealtimeQuery(
             descriptor: .liveDistance,
-            from: startDate
+            from: startDate,
+            sessionID: sessionID
         )
     }
 
     func startRealtimeQuery(
         descriptor: HealthMetricDescriptor,
-        from startDate: Date
+        from startDate: Date,
+        sessionID: UUID
     ) {
         guard let quantityType =
                 descriptor.quantityType else {
@@ -439,7 +456,8 @@ private extension HealthKitManager {
                     samples,
                     deletedObjects: deletedObjects,
                     descriptor: descriptor,
-                    anchor: newAnchor
+                    anchor: newAnchor,
+                    sessionID: sessionID
                 )
             }
 
@@ -460,23 +478,25 @@ private extension HealthKitManager {
         }
 
         lock.withLock {
+            guard observationSession.isCurrent(sessionID) else { return }
             activeQueries.append(query)
+            healthStore.execute(query)
         }
-
-        healthStore.execute(query)
     }
 
     func handleRealtimeSamples(
         _ samples: [HKSample]?,
         deletedObjects: [HKDeletedObject]?,
         descriptor: HealthMetricDescriptor,
-        anchor: HKQueryAnchor?
+        anchor: HKQueryAnchor?,
+        sessionID: UUID
     ) {
         let quantitySamples =
             samples as? [HKQuantitySample]
             ?? []
 
         lock.withLock {
+            guard observationSession.isCurrent(sessionID) else { return }
             if let anchor {
                 liveAnchors[
                     descriptor.metric.rawValue
