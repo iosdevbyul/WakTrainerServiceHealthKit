@@ -20,7 +20,7 @@ struct LiveHealthSnapshotAccumulator {
 
         switch metric {
         case .heartRate:
-            guard previous == nil || sampleEndDate >= previous! else {
+            if let previous, sampleEndDate < previous {
                 return
             }
             heartRate = value
@@ -38,7 +38,11 @@ struct LiveHealthSnapshotAccumulator {
             return
         }
 
-        if previous == nil || sampleEndDate > previous! {
+        if let previous {
+            if sampleEndDate > previous {
+                sampleEndDates[metric] = sampleEndDate
+            }
+        } else {
             sampleEndDates[metric] = sampleEndDate
         }
     }
