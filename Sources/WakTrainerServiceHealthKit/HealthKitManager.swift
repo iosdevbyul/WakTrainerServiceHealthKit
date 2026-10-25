@@ -429,7 +429,7 @@ private extension HealthKitManager {
                     HKObjectQueryNoLimit
             ) {
                 [weak self]
-                _, samples, _, newAnchor, error in
+                _, samples, deletedObjects, newAnchor, error in
 
                 guard error == nil else {
                     return
@@ -437,6 +437,7 @@ private extension HealthKitManager {
 
                 self?.handleRealtimeSamples(
                     samples,
+                    deletedObjects: deletedObjects,
                     descriptor: descriptor,
                     anchor: newAnchor
                 )
@@ -444,7 +445,7 @@ private extension HealthKitManager {
 
         query.updateHandler = {
             [weak self]
-            _, samples, _, newAnchor, error in
+            _, samples, deletedObjects, newAnchor, error in
 
             guard error == nil else {
                 return
@@ -466,6 +467,7 @@ private extension HealthKitManager {
 
     func handleRealtimeSamples(
         _ samples: [HKSample]?,
+        deletedObjects: [HKDeletedObject]?,
         descriptor: HealthMetricDescriptor,
         anchor: HKQueryAnchor?
     ) {
@@ -482,10 +484,15 @@ private extension HealthKitManager {
 
             for sample in quantitySamples {
                 liveAccumulator.apply(
+                    sampleID: sample.uuid,
                     metric: descriptor.metric,
                     value: descriptor.value(from: sample),
                     sampleEndDate: sample.endDate
                 )
+            }
+
+            for deleted in deletedObjects ?? [] {
+                liveAccumulator.remove(sampleID: deleted.uuid)
             }
 
             yieldSnapshotLocked()
