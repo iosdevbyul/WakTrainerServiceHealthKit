@@ -14,7 +14,8 @@ struct LiveObservationSessionTests {
         #expect(oldID != newID)
         #expect(!sessions.isCurrent(oldID))
         #expect(sessions.isCurrent(newID))
-        #expect(!sessions.end(ifCurrent: oldID))
+        let endedOld = sessions.end(ifCurrent: oldID)
+        #expect(!endedOld)
         #expect(sessions.isCurrent(newID))
     }
 
@@ -24,16 +25,19 @@ struct LiveObservationSessionTests {
         let sessionID = sessions.begin()
 
         #expect(sessions.isCurrent(sessionID))
-        #expect(sessions.end(ifCurrent: sessionID))
+        let ended = sessions.end(ifCurrent: sessionID)
+        #expect(ended)
         #expect(!sessions.isCurrent(sessionID))
-        #expect(!sessions.end(ifCurrent: sessionID))
+        let endedAgain = sessions.end(ifCurrent: sessionID)
+        #expect(!endedAgain)
     }
 
     @Test("Repeated workout starts create distinct observation identities")
     func restartedSessionHasNewIdentity() {
         var sessions = LiveObservationSession()
         let firstID = sessions.begin()
-        #expect(sessions.end(ifCurrent: firstID))
+        let endedFirst = sessions.end(ifCurrent: firstID)
+        #expect(endedFirst)
         let secondID = sessions.begin()
 
         #expect(!sessions.isCurrent(firstID))
