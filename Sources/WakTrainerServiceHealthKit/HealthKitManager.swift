@@ -453,6 +453,7 @@ private extension HealthKitManager {
 
             self?.handleRealtimeSamples(
                 samples,
+                deletedObjects: deletedObjects,
                 descriptor: descriptor,
                 anchor: newAnchor
             )
