@@ -41,6 +41,70 @@ struct LiveHealthSnapshotAccumulatorTests {
         #expect(snapshot.sampleEndDates[.heartRate] == nil)
     }
 
+    @Test("Repeated anchored sample UUID does not double-count cumulative metrics")
+    func repeatedSamplesAreIdempotent() {
+        let id = UUID()
+        let acquiredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        var accumulator = LiveHealthSnapshotAccumulator()
+        accumulator.apply(
+            sampleID: id, metric: .stepCount, value: 120,
+            sampleEndDate: acquiredAt
+        )
+        accumulator.apply(
+            sampleID: id, metric: .stepCount, value: 120,
+            sampleEndDate: acquiredAt
+        )
+
+        #expect(accumulator.snapshot.stepCount == 120)
+        #expect(accumulator.snapshot.sampleEndDates[.stepCount] == acquiredAt)
+    }
+
+    @Test("Deletion subtracts cumulative sample and recalculates latest acquisition time")
+    func deletedSampleIsRemovedFromTotalsAndMetadata() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = Date(timeIntervalSince1970: 1_800_000_000)
+        let second = first.addingTimeInterval(60)
+        var accumulator = LiveHealthSnapshotAccumulator()
+        accumulator.apply(
+            sampleID: firstID, metric: .activeEnergyBurned, value: 10,
+            sampleEndDate: first
+        )
+        accumulator.apply(
+            sampleID: secondID, metric: .activeEnergyBurned, value: 20,
+            sampleEndDate: second
+        )
+        accumulator.remove(sampleID: secondID)
+
+        #expect(accumulator.snapshot.activeCalories == 10)
+        #expect(accumulator.snapshot.sampleEndDates[.activeEnergyBurned] == first)
+
+        accumulator.remove(sampleID: firstID)
+        #expect(accumulator.snapshot.activeCalories == 0)
+        #expect(accumulator.snapshot.sampleEndDates[.activeEnergyBurned] == nil)
+    }
+
+    @Test("Deleting latest heart rate restores previous original sample")
+    func deletingLatestHeartRateRestoresPrevious() {
+        let olderID = UUID()
+        let newerID = UUID()
+        let earlier = Date(timeIntervalSince1970: 1_800_000_000)
+        let later = earlier.addingTimeInterval(30)
+        var accumulator = LiveHealthSnapshotAccumulator()
+        accumulator.apply(
+            sampleID: newerID, metric: .heartRate, value: 145,
+            sampleEndDate: later
+        )
+        accumulator.apply(
+            sampleID: olderID, metric: .heartRate, value: 110,
+            sampleEndDate: earlier
+        )
+        accumulator.remove(sampleID: newerID)
+
+        #expect(accumulator.snapshot.heartRate == 110)
+        #expect(accumulator.snapshot.sampleEndDates[.heartRate] == earlier)
+    }
+
     @Test("Reset clears live values and timestamps together")
     func resetRemovesOldMeasurementMetadata() {
         let measuredAt = Date(timeIntervalSince1970: 1_800_000_000)
