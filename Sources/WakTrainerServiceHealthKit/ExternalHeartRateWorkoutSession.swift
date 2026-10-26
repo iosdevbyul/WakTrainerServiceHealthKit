@@ -4,6 +4,7 @@ import HealthKit
 /// Opt-in iPhone workout collection for an external heart-rate sensor such as AirPods Pro 3.
 /// This service does not alter the existing read-only HealthKitManager observation pipeline.
 /// A caller must not start another HKWorkoutSession for the same workout.
+@available(iOS 26.0, *)
 public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendable {
     public enum SessionError: Error {
         case unavailable
@@ -164,6 +165,7 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
     }
 }
 
+@available(iOS 26.0, *)
 extension ExternalHeartRateWorkoutSession: HKWorkoutSessionDelegate {
     public func workoutSession(
         _ workoutSession: HKWorkoutSession,
@@ -186,6 +188,7 @@ extension ExternalHeartRateWorkoutSession: HKWorkoutSessionDelegate {
     }
 }
 
+@available(iOS 26.0, *)
 extension ExternalHeartRateWorkoutSession: HKLiveWorkoutBuilderDelegate {
     public func workoutBuilder(
         _ workoutBuilder: HKLiveWorkoutBuilder,
