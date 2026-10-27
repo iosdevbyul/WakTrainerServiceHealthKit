@@ -41,6 +41,30 @@ struct LiveHealthSnapshotAccumulatorTests {
         #expect(snapshot.sampleEndDates[.heartRate] == nil)
     }
 
+    @Test("Cycling distance is observed and repeated anchored samples are not double counted")
+    func cyclingDistanceIsIncludedOnce() {
+        let sampleID = UUID()
+        let acquiredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        var accumulator = LiveHealthSnapshotAccumulator()
+        accumulator.apply(
+            sampleID: sampleID,
+            metric: .distanceCycling,
+            value: 1_250,
+            sampleEndDate: acquiredAt
+        )
+        accumulator.apply(
+            sampleID: sampleID,
+            metric: .distanceCycling,
+            value: 1_250,
+            sampleEndDate: acquiredAt
+        )
+        #expect(accumulator.snapshot.distance == 1_250)
+        #expect(accumulator.snapshot.sampleEndDates[.distanceCycling] == acquiredAt)
+        accumulator.remove(sampleID: sampleID)
+        #expect(accumulator.snapshot.distance == 0)
+        #expect(accumulator.snapshot.sampleEndDates[.distanceCycling] == nil)
+    }
+
     @Test("Repeated anchored sample UUID does not double-count cumulative metrics")
     func repeatedSamplesAreIdempotent() {
         let id = UUID()
