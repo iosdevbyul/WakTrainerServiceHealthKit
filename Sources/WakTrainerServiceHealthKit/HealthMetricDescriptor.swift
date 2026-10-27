@@ -202,6 +202,13 @@ extension HealthMetricDescriptor {
         unitSymbol: "count"
     )
 
+    static let liveCyclingDistance = HealthMetricDescriptor(
+        metric: .distanceCycling,
+        identifier: .distanceCycling,
+        unit: .meter(),
+        unitSymbol: "m"
+    )
+
     static let liveDistance = HealthMetricDescriptor(
         metric: .distanceWalkingRunning,
         identifier: .distanceWalkingRunning,
