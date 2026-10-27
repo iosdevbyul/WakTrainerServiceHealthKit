@@ -412,6 +412,12 @@ private extension HealthKitManager {
             from: startDate,
             sessionID: sessionID
         )
+
+        startRealtimeQuery(
+            descriptor: .liveCyclingDistance,
+            from: startDate,
+            sessionID: sessionID
+        )
     }
 
     func startRealtimeQuery(
