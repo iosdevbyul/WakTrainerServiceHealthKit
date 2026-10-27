@@ -46,7 +46,8 @@ struct LiveHealthSnapshotAccumulator {
     }
 
     private static let supportedMetrics: Set<WorkoutHealthMetric> = [
-        .heartRate, .activeEnergyBurned, .stepCount, .distanceWalkingRunning
+        .heartRate, .activeEnergyBurned, .stepCount,
+        .distanceWalkingRunning, .distanceCycling
     ]
 
     var snapshot: HealthSnapshot {
@@ -83,7 +84,7 @@ struct LiveHealthSnapshotAccumulator {
                 calories += entry.value
             case .stepCount:
                 steps += entry.value
-            case .distanceWalkingRunning:
+            case .distanceWalkingRunning, .distanceCycling:
                 distance += entry.value
             default:
                 break
