@@ -115,7 +115,7 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
 
     /// Ends collection and saves the completed workout in HealthKit.
     /// Existing WakTrainer workout persistence remains the responsibility of its caller.
-    public func stop() async throws {
+    public func stop(saveToHealthKit: Bool = true) async throws {
         let current = lock.withLock { () -> (HKWorkoutSession, HKLiveWorkoutBuilder)? in
             guard let session, let builder else { return nil }
             self.session = nil
@@ -137,15 +137,21 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
                 }
             }
         }
-        _ = try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<HKWorkout?, Error>) in
-            builder.finishWorkout { workout, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: workout)
+        if saveToHealthKit {
+            _ = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<HKWorkout?, Error>) in
+                builder.finishWorkout { workout, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: workout)
+                    }
                 }
             }
+        } else {
+            // Preserve live heart-rate collection but do not publish the
+            // resulting workout to HealthKit / Fitness.
+            builder.discardWorkout()
         }
     }
 
