@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import os
 
 /// Opt-in iPhone workout collection for an external heart-rate sensor such as AirPods Pro 3.
 /// This service does not alter the existing read-only HealthKitManager observation pipeline.
@@ -19,6 +20,8 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
     private var builder: HKLiveWorkoutBuilder?
     private var continuation: AsyncStream<Double>.Continuation?
     private var starting = false
+    private var stopping = false
+    private let logger = Logger(subsystem: "WakTrainerServiceHealthKit", category: "ExternalHeartRateWorkoutSession")
 
     public override convenience init() {
         self.init(store: HKHealthStore())
@@ -86,6 +89,7 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
         }
 
         let startDate = Date()
+        logger.info("Starting an app-owned external heart-rate workout session")
         newSession.startActivity(with: startDate)
         do {
             let started = try await withCheckedThrowingContinuation {
@@ -101,6 +105,7 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
             guard started else { throw SessionError.collectionFailed }
             return stream
         } catch {
+            logger.error("External heart-rate collection failed to start: \(error.localizedDescription, privacy: .public)")
             newSession.end()
             newBuilder.discardWorkout()
             lock.withLock {
@@ -117,7 +122,8 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
     /// Existing WakTrainer workout persistence remains the responsibility of its caller.
     public func stop(saveToHealthKit: Bool = true) async throws {
         let current = lock.withLock { () -> (HKWorkoutSession, HKLiveWorkoutBuilder)? in
-            guard let session, let builder else { return nil }
+            guard let session, let builder, !stopping else { return nil }
+            stopping = true
             self.session = nil
             self.builder = nil
             continuation?.finish()
@@ -125,6 +131,8 @@ public final class ExternalHeartRateWorkoutSession: NSObject, @unchecked Sendabl
             return (session, builder)
         }
         guard let (session, builder) = current else { return }
+        defer { lock.withLock { stopping = false } }
+        logger.info("Ending app-owned external heart-rate session")
         session.end()
 
         try await withCheckedThrowingContinuation {
@@ -178,12 +186,27 @@ extension ExternalHeartRateWorkoutSession: HKWorkoutSessionDelegate {
         didChangeTo toState: HKWorkoutSessionState,
         from fromState: HKWorkoutSessionState,
         date: Date
-    ) {}
+    ) {
+        let unexpectedEnd = lock.withLock { () -> Bool in
+            guard session === workoutSession else { return false }
+            if toState == .ended && !stopping {
+                continuation?.finish()
+                continuation = nil
+                return true
+            }
+            return false
+        }
+        logger.info("External heart-rate session state changed: \(fromState.rawValue) -> \(toState.rawValue)")
+        if unexpectedEnd {
+            logger.warning("External heart-rate session ended unexpectedly; workout tracking must continue independently")
+        }
+    }
 
     public func workoutSession(
         _ workoutSession: HKWorkoutSession,
         didFailWithError error: Error
     ) {
+        logger.error("External heart-rate session failed: \(error.localizedDescription, privacy: .public)")
         lock.withLock {
             guard session === workoutSession else { return }
             continuation?.finish()
