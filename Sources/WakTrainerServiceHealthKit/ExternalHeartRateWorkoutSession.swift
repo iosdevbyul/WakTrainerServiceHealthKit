@@ -196,7 +196,7 @@ extension ExternalHeartRateWorkoutSession: HKWorkoutSessionDelegate {
             }
             return false
         }
-        logger.info("External heart-rate session state changed: \(from.rawValue) -> \(toState.rawValue)")
+        logger.info("External heart-rate session state changed: \(fromState.rawValue) -> \(toState.rawValue)")
         if unexpectedEnd {
             logger.warning("External heart-rate session ended unexpectedly; workout tracking must continue independently")
         }
